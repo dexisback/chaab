@@ -1,1 +1,1 @@
-we're building an actor model implementation in rust baby!
+we're building an actor model implementation in go baby!

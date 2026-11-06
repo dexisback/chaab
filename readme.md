@@ -34,3 +34,17 @@ For now, save the file and run:
 
 
 
+currently, goroutine_dispatcher handles both actor lifecycle and execution . 
+instead, we should share dispatcher and scheduler
+
+
+
+
+---
+
+
+Phase 2: redesigning scheduler.go:
+the scheduler should know how to execute tasks, but not what an actor is.
+
+That separation lets us implement different execution strategies without coupling them to actor, mailbox, or system
+

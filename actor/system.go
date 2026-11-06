@@ -4,6 +4,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -34,14 +35,16 @@ func NewSystem() *System {
 	// return &System{
 	// 	actors: make(map[string]*actorCell),
 	// }
-	return NewSystemWithDispatcher(NewGoroutineDispatcher())
+	scheduler := NewGoRoutineScheduler()
+	dispatcher := NewGoroutineDispatcher(scheduler)
+	return NewSystemWithDispatcher(dispatcher)
 }
 
 //others didnt need intialisation because they were just types(you could technically though)
 
 func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
 	if actor == nil {
-		return nil, fmt.Errorf("actor cannot be nil")
+		return nil, ErrNilActor
 	}
 	//else:
 	s.mu.Lock()
@@ -68,7 +71,7 @@ func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
 		ref:   reference,
 	}
 	if err := s.dispatcher.Register(cell); err != nil {
-		return nil, fmt.Errorf("registered actor: %w", err)
+		return nil, errors.Join(ErrRegisterActor, err)
 	}
 
 	s.actors[id] = cell

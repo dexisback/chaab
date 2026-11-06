@@ -1,0 +1,71 @@
+//this create actors, assigns unique ids , maintains an active actor registry for lookup, returns actor refereces so other actors can communicate
+
+
+package actor 
+
+import (
+	"fmt"
+	"sync"
+)
+
+const defaultMailBoxCapacity = 100
+
+//actorCell represents an actor managed by the actorSystem
+type actorCell struct {
+	actor Actor 
+	ref *ActorRef 
+}
+
+type System struct {
+	mu   sync.RWMutex
+	actors map[string]*actorCell
+	nextID   uint64
+}
+
+
+func NewSystem() *System {
+	return &System{
+		actors: make(map[string]*actorCell),
+	}
+}
+//others didnt need intialisation because they were just types(you could technically though)
+
+func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
+	if actor == nil {
+		return nil, fmt.Errorf("actor cannot be nil")
+	}
+	//else:
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nextID++
+	id := fmt.Sprintf("actor-%d", s.nextID)
+
+	mailbox := NewMailBox(defaultMailBoxCapacity)
+
+	reference := &ActorRef{
+		id: id,
+		mailbox: mailbox,
+	}
+
+	s.actors[id] = &actorCell{
+		actor: actor,
+		ref: reference,
+	}
+	return reference, nil
+}
+
+//lookup an actor by its id:
+func (s *System) GetActor(id string) (*ActorRef, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cell, exists := s.actors[id]
+	if !exists {
+		return nil, false
+	}
+	//else:
+	return cell.ref, true
+}
+
+//NOTE: for now, we're generating sequential IDs. later, we'll consider using UUIDs or more robust ID generation strategies.

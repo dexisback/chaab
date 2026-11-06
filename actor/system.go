@@ -1,33 +1,42 @@
 //this create actors, assigns unique ids , maintains an active actor registry for lookup, returns actor refereces so other actors can communicate
 
-
-package actor 
+package actor
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
 
 const defaultMailBoxCapacity = 100
 
-//actorCell represents an actor managed by the actorSystem
+// actorCell represents an actor managed by the actorSystem
 type actorCell struct {
-	actor Actor 
-	ref *ActorRef 
+	actor Actor
+	ref   *ActorRef
 }
 
 type System struct {
-	mu   sync.RWMutex
-	actors map[string]*actorCell
-	nextID   uint64
+	mu         sync.RWMutex
+	actors     map[string]*actorCell
+	nextID     uint64
+	dispatcher Dispatcher //new for goroutine_dispatcher
 }
 
-
-func NewSystem() *System {
+func NewSystemWithDispatcher(dispatcher Dispatcher) *System {
 	return &System{
-		actors: make(map[string]*actorCell),
+		actors:     make(map[string]*actorCell),
+		dispatcher: dispatcher,
 	}
 }
+
+func NewSystem() *System {
+	// return &System{
+	// 	actors: make(map[string]*actorCell),
+	// }
+	return NewSystemWithDispatcher(NewGoroutineDispatcher())
+}
+
 //others didnt need intialisation because they were just types(you could technically though)
 
 func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
@@ -44,18 +53,29 @@ func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
 	mailbox := NewMailBox(defaultMailBoxCapacity)
 
 	reference := &ActorRef{
-		id: id,
+		id:      id,
 		mailbox: mailbox,
 	}
 
-	s.actors[id] = &actorCell{
+	// s.actors[id] = &actorCell{
+	// 	actor: actor,
+	// 	ref: reference,
+	// }
+	// return reference, nil
+
+	cell := &actorCell{
 		actor: actor,
-		ref: reference,
+		ref:   reference,
 	}
+	if err := s.dispatcher.Register(cell); err != nil {
+		return nil, fmt.Errorf("registered actor: %w", err)
+	}
+
+	s.actors[id] = cell
 	return reference, nil
 }
 
-//lookup an actor by its id:
+// lookup an actor by its id:
 func (s *System) GetActor(id string) (*ActorRef, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -69,3 +89,7 @@ func (s *System) GetActor(id string) (*ActorRef, bool) {
 }
 
 //NOTE: for now, we're generating sequential IDs. later, we'll consider using UUIDs or more robust ID generation strategies.
+
+func (s *System) Shutdown(ctx context.Context) error {
+	return s.dispatcher.Shutdown(ctx)
+}  //so the applicatoin doesnt need to know which dispatcher / strategy is running 

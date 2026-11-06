@@ -26,4 +26,11 @@ we'll eventually implement :
 //TODO : One limitation: this initial implementation doesn't support mailbox closure or distinguish a closed mailbox from a message. We'll address lifecycle semantics later.
 //For this first version, we'll implement actor registration and lookup. Actors won't process messages yet.
 
-//
+//Currently, CreateActor() registers an actor and creates its mailbox. It does not start processing messages.
+
+That's intentional. The Dispatcher will take responsibility for execution.
+
+For now, save the file and run:
+
+
+

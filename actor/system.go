@@ -15,7 +15,9 @@ type System struct {
 	actors     map[string]*ActorCell
 	nextID     uint64
 	dispatcher Dispatcher
+	closed bool
 }
+
 
 // SystemOption configures a System.
 type SystemOption func(*System)
@@ -45,13 +47,21 @@ func NewSystemWithDispatcher(dispatcher Dispatcher) *System {
 }
 
 // CreateActor registers a new actor with the system and its dispatcher, returning an ActorRef.
+//NOTE: once shutdown begins, CreateActor must reject new actors. 
+//also , an actor should only be removed from the registry after its graceful shutdown succeeds
 func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
+	
+
 	if actor == nil {
 		return nil, ErrNilActor
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.closed{
+		return nil, ErrDispatcherClosed
+	}
 
 	s.nextID++
 	id := fmt.Sprintf("actor-%d", s.nextID)
@@ -91,19 +101,39 @@ func (s *System) GetActor(id string) (*ActorRef, bool) {
 
 // Unregister stops an actor and removes it from the system registry.
 func (s *System) Unregister(id string) error {
-	s.mu.Lock()
+	s.mu.RLock()
+	
 	_, exists := s.actors[id]
+	s.mu.RUnlock()
+
 	if !exists {
-		s.mu.Unlock()
 		return fmt.Errorf("%w: id=%s", ErrActorNotFound, id)
 	}
+
+	if err := s.dispatcher.Unregister(id); err != nil{
+		return err
+	}
+
+	s.mu.Lock()
 	delete(s.actors, id)
 	s.mu.Unlock()
 
-	return s.dispatcher.Unregister(id)
+	return nil
 }
 
 // Shutdown initiates graceful shutdown of the dispatcher and its actors.
 func (s *System) Shutdown(ctx context.Context) error {
-	return s.dispatcher.Shutdown(ctx)
+	s.mu.Lock()
+	s.closed = true 
+	s.mu.Unlock()
+
+	if err := s.dispatcher.Shutdown(ctx); err != nil {
+		return err 
+	}
+
+	s.mu.Lock()
+	s.actors = make(map[string]*ActorCell)
+	s.mu.Unlock()
+
+	return nil
 }

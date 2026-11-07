@@ -2,14 +2,16 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 )
 
 type actorWorker struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel  context.CancelFunc
+	done    chan struct{}
+	mailbox *Mailbox
 }
 
 // GoroutineDispatcher executes each registered actor on its own dedicated goroutine.
@@ -61,8 +63,9 @@ func (d *GoroutineDispatcher) Register(cell *ActorCell) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	worker := &actorWorker{
-		cancel: cancel,
-		done:   make(chan struct{}),
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		mailbox: mailbox,
 	}
 
 	d.workers[id] = worker
@@ -81,6 +84,8 @@ func (d *GoroutineDispatcher) run(
 	mailbox *Mailbox,
 	worker *actorWorker,
 ) {
+	defer worker.cancel()
+	defer mailbox.Close()
 	defer d.wg.Done()
 	defer close(worker.done)
 	defer func() {
@@ -96,7 +101,7 @@ func (d *GoroutineDispatcher) run(
 	for {
 		message, err := mailbox.Receive(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
+			if errors.Is(err, ErrActorStopped) || ctx.Err() != nil {
 				return
 			}
 			slog.Error("mailbox receive failed", "actor_id", cell.Ref.ID(), "error", err)
@@ -134,9 +139,10 @@ func (d *GoroutineDispatcher) Unregister(id string) error {
 	delete(d.workers, id)
 	d.mu.Unlock()
 
-	worker.cancel()
-	<-worker.done
+	worker.mailbox.Close()  //close
+	<-worker.done  //wait for the actor to finish processing any remaining messages
 	return nil
+	//NOTE: we intentionally dont call worker.cancel() here, because the actors needs its context to remain active while draining
 }
 
 // Shutdown stops all actors and waits for all actor goroutines to exit or ctx to expire.
@@ -148,14 +154,24 @@ func (d *GoroutineDispatcher) Shutdown(ctx context.Context) error {
 	d.mu.Lock()
 	if !d.closed {
 		d.closed = true
+
+		workers := make([]*actorWorker, 0, len(d.workers))
+
+
 		for _, worker := range d.workers {
-			worker.cancel()
+			workers = append(workers, worker)
 		}
 		d.workers = make(map[string]*actorWorker)
+		
+		
 		go func() {
+			for _, worker := range workers {
+				worker.mailbox.Close()
+			}
 			d.wg.Wait()
 			close(d.done)
-		}()
+			}()
+
 	}
 	done := d.done
 	d.mu.Unlock()
@@ -167,3 +183,6 @@ func (d *GoroutineDispatcher) Shutdown(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+//Unregister(id) gracefully stops one specific actor
+//Shutdown(ctx) gracefully stops all actors

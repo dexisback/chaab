@@ -1,20 +1,20 @@
 package actor
+
 import "context"
-//connects message to actor
-//currently our `System` can create actors and assign mailboxes, but nothing actually consumes messages from those mailboxes
 
-
-
-//dispatch solves that
-//application -> ActorRef (via Tell) -> Mailbox -> Dispatcher (via Receive) -> Actor.Receive(ctx , message)
-
-//dispatcher: manages actor execution and registration
-//scheduler: decides which worker executes an actor ka message
-type Dispatcher interface {
-	Register(cell *actorCell) error //make an actor avaiable for execution
-	Unregister(id string) error  //remove it from execution
-	Shutdown(ctx context.Context) error  //handles graceful shutdown
+// ActorCell represents an actor instance managed by the runtime.
+// It bundles the actor implementation, its addressable reference,
+// and its mailbox for consumption by a Dispatcher.
+type ActorCell struct {
+	Actor   Actor
+	Ref     *ActorRef
+	Mailbox *Mailbox
 }
 
-//later on we will have mutliple dispatch strategy. currently its one goroutine per actor, later well have workerpooldispatcher, and workstealingdispatcher
-
+// Dispatcher manages actor execution and registration.
+// All execution strategies implement this common interface.
+type Dispatcher interface {
+	Register(cell *ActorCell) error
+	Unregister(id string) error
+	Shutdown(ctx context.Context) error
+}

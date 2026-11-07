@@ -1,5 +1,4 @@
-//msg is what we send b/w 2 actors duh
-package actor 
+// msg is what we send b/w 2 actors duh
+package actor
 
-type Message any 
-
+type Message any

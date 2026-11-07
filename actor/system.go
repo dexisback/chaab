@@ -1,52 +1,55 @@
-//this create actors, assigns unique ids , maintains an active actor registry for lookup, returns actor refereces so other actors can communicate
-
 package actor
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 )
 
 const defaultMailBoxCapacity = 100
 
-// actorCell represents an actor managed by the actorSystem
-type actorCell struct {
-	actor Actor
-	ref   *ActorRef
-}
-
+// System manages actor lifecycles, assigns unique IDs, maintains an
+// active actor registry for lookup, and coordinates with a Dispatcher for execution.
 type System struct {
 	mu         sync.RWMutex
-	actors     map[string]*actorCell
+	actors     map[string]*ActorCell
 	nextID     uint64
-	dispatcher Dispatcher //new for goroutine_dispatcher
+	dispatcher Dispatcher
 }
 
-func NewSystemWithDispatcher(dispatcher Dispatcher) *System {
-	return &System{
-		actors:     make(map[string]*actorCell),
-		dispatcher: dispatcher,
+// SystemOption configures a System.
+type SystemOption func(*System)
+
+// WithDispatcher sets the execution Dispatcher for the actor system.
+func WithDispatcher(dispatcher Dispatcher) SystemOption {
+	return func(s *System) {
+		s.dispatcher = dispatcher
 	}
 }
 
-func NewSystem() *System {
-	// return &System{
-	// 	actors: make(map[string]*actorCell),
-	// }
-	scheduler := NewGoRoutineScheduler()
-	dispatcher := NewGoroutineDispatcher(scheduler)
-	return NewSystemWithDispatcher(dispatcher)
+// NewSystem creates a new actor system. By default, it uses a GoroutineDispatcher.
+func NewSystem(opts ...SystemOption) *System {
+	s := &System{
+		actors:     make(map[string]*ActorCell),
+		dispatcher: NewGoroutineDispatcher(),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
-//others didnt need intialisation because they were just types(you could technically though)
+// NewSystemWithDispatcher creates a new actor system configured with the provided dispatcher.
+func NewSystemWithDispatcher(dispatcher Dispatcher) *System {
+	return NewSystem(WithDispatcher(dispatcher))
+}
 
+// CreateActor registers a new actor with the system and its dispatcher, returning an ActorRef.
 func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
 	if actor == nil {
 		return nil, ErrNilActor
 	}
-	//else:
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -60,25 +63,21 @@ func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
 		mailbox: mailbox,
 	}
 
-	// s.actors[id] = &actorCell{
-	// 	actor: actor,
-	// 	ref: reference,
-	// }
-	// return reference, nil
-
-	cell := &actorCell{
-		actor: actor,
-		ref:   reference,
+	cell := &ActorCell{
+		Actor:   actor,
+		Ref:     reference,
+		Mailbox: mailbox,
 	}
+
 	if err := s.dispatcher.Register(cell); err != nil {
-		return nil, errors.Join(ErrRegisterActor, err)
+		return nil, fmt.Errorf("%w: %w", ErrRegisterActor, err)
 	}
 
 	s.actors[id] = cell
 	return reference, nil
 }
 
-// lookup an actor by its id:
+// GetActor looks up an actor reference by its ID.
 func (s *System) GetActor(id string) (*ActorRef, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -87,12 +86,24 @@ func (s *System) GetActor(id string) (*ActorRef, bool) {
 	if !exists {
 		return nil, false
 	}
-	//else:
-	return cell.ref, true
+	return cell.Ref, true
 }
 
-//NOTE: for now, we're generating sequential IDs. later, we'll consider using UUIDs or more robust ID generation strategies.
+// Unregister stops an actor and removes it from the system registry.
+func (s *System) Unregister(id string) error {
+	s.mu.Lock()
+	_, exists := s.actors[id]
+	if !exists {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: id=%s", ErrActorNotFound, id)
+	}
+	delete(s.actors, id)
+	s.mu.Unlock()
 
+	return s.dispatcher.Unregister(id)
+}
+
+// Shutdown initiates graceful shutdown of the dispatcher and its actors.
 func (s *System) Shutdown(ctx context.Context) error {
 	return s.dispatcher.Shutdown(ctx)
-}  //so the applicatoin doesnt need to know which dispatcher / strategy is running 
+}

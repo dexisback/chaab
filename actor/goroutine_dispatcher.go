@@ -139,10 +139,9 @@ func (d *GoroutineDispatcher) Unregister(id string) error {
 	delete(d.workers, id)
 	d.mu.Unlock()
 
-	worker.mailbox.Close()  //close
-	<-worker.done  //wait for the actor to finish processing any remaining messages
+	worker.mailbox.Close()
+	<-worker.done
 	return nil
-	//NOTE: we intentionally dont call worker.cancel() here, because the actors needs its context to remain active while draining
 }
 
 // Shutdown stops all actors and waits for all actor goroutines to exit or ctx to expire.
@@ -156,22 +155,18 @@ func (d *GoroutineDispatcher) Shutdown(ctx context.Context) error {
 		d.closed = true
 
 		workers := make([]*actorWorker, 0, len(d.workers))
-
-
 		for _, worker := range d.workers {
 			workers = append(workers, worker)
 		}
 		d.workers = make(map[string]*actorWorker)
-		
-		
+
 		go func() {
 			for _, worker := range workers {
 				worker.mailbox.Close()
 			}
 			d.wg.Wait()
 			close(d.done)
-			}()
-
+		}()
 	}
 	done := d.done
 	d.mu.Unlock()
@@ -183,6 +178,3 @@ func (d *GoroutineDispatcher) Shutdown(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
-
-//Unregister(id) gracefully stops one specific actor
-//Shutdown(ctx) gracefully stops all actors

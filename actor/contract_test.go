@@ -147,7 +147,9 @@ func RunDispatcherContractTests(t *testing.T, newDispatcher func() actor.Dispatc
 			_ = d.Shutdown(ctx)
 		})
 
-		const numActors = 5
+		// Use 2 actors to prove concurrent execution between actors without
+		// starving bounded worker pools with small worker counts.
+		const numActors = 2
 		var barrier sync.WaitGroup
 		barrier.Add(numActors)
 		proceed := make(chan struct{})

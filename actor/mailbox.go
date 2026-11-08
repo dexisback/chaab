@@ -98,12 +98,10 @@ func (m *Mailbox) Close() {
 	close(m.closeDone)
 }
 
-
-
-func(m *Mailbox) tryReceive() (Message, bool, error) {
+func (m *Mailbox) tryReceive() (Message, bool, error) {
 	select {
-	case message , ok := <-m.messages:
-		if !ok{
+	case message, ok := <-m.messages:
+		if !ok {
 			return nil, false, ErrActorStopped
 		}
 		//else if ok is true, return the message
@@ -113,11 +111,9 @@ func(m *Mailbox) tryReceive() (Message, bool, error) {
 	}
 }
 
-
-func(message *Mailbox) hasMessages() bool {
-	return len(message.messages) >0
+func (message *Mailbox) hasMessages() bool {
+	return len(message.messages) > 0
 }
-
 
 // notify invokes the registered callback, if one is set.
 func (m *Mailbox) notify() {

@@ -8,6 +8,7 @@ import (
 type Mailbox struct {
 	messages  chan Message
 	mu        sync.RWMutex
+	notifier  func()
 	closed    bool
 	done      chan struct{}
 	closeDone chan struct{}
@@ -48,6 +49,7 @@ func (m *Mailbox) Send(ctx context.Context, message Message) error {
 
 	select {
 	case m.messages <- message:
+		m.notify() //the dispatcher now gets notifier when a msg is succesfully enqueued
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -92,5 +94,53 @@ func (m *Mailbox) Close() {
 
 	m.senders.Wait()
 	close(m.messages)
+	m.notify() //the dispatcher now gets notifier when the mailbox is closed
 	close(m.closeDone)
+}
+
+
+
+func(m *Mailbox) tryReceive() (Message, bool, error) {
+	select {
+	case message , ok := <-m.messages:
+		if !ok{
+			return nil, false, ErrActorStopped
+		}
+		//else if ok is true, return the message
+		return message, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+
+func(message *Mailbox) hasMessages() bool {
+	return len(message.messages) >0
+}
+
+
+// notify invokes the registered callback, if one is set.
+func (m *Mailbox) notify() {
+	m.mu.RLock()
+	notifier := m.notifier
+	m.mu.RUnlock()
+
+	if notifier != nil {
+		notifier()
+	}
+}
+
+// setNotifier registers a callback for mailbox activity.
+func (m *Mailbox) setNotifier(notifier func()) {
+	m.mu.Lock()
+	m.notifier = notifier
+
+	//capture whether there's already work to process
+	ready := len(m.messages) > 0 || m.closed
+	m.mu.Unlock()
+
+	if ready && notifier != nil {
+		notifier()
+	}
+
 }

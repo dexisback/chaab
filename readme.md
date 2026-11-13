@@ -11,18 +11,10 @@ It provides location transparency, strict sequential processing guarantees per a
 Chaab decouples **Message Delivery** from **Message Execution**:
 
 ```mermaid
-flowchart TD
-    subgraph Message Delivery Flow
-        Caller["Caller / Client"] -->|"Tell(ctx, msg)"| Ref["ActorRef"]
-        Ref -->|"Send(ctx, msg)"| MB["Mailbox (Bounded FIFO Queue)"]
-    end
-
-    subgraph Message Execution Flow
-        MB -. "Notifier Callback" .-> Disp["Dispatcher\n(Goroutine / WorkerPool / WorkStealing)"]
-        Disp -->|"tryReceive() / Receive()"| Exec["Actor.Receive(ctx, msg)"]
-        Exec -. "Panic / Error" .-> Sup["Supervisor (OneForOneStrategy)"]
-        Sup -. "DirectiveRestart" .-> Factory["ActorFactory (Fresh Instance)"]
-    end
+flowchart LR
+    Caller["Caller"] -->|Tell| Ref["ActorRef"] -->|Send| MB["Mailbox"]
+    MB -.->|notify| Disp["Dispatcher"] -->|Receive| Actor["Actor"]
+    Actor -.->|panic| Sup["Supervisor"] -.->|restart| Factory["Factory"]
 ```
 
 1. **Message Delivery**: The caller interacts only with an addressable `ActorRef`. Messages are enqueued into a thread-safe, bounded `Mailbox`. Callers never touch actor state or goroutines directly.
@@ -393,4 +385,18 @@ go test -bench=BenchmarkWorkStealingSkewed -benchmem ./benchmarks
 # Run the complete benchmark suite
 go test -bench=. -benchmem ./benchmarks
 ```
+
+---
+
+## Design Decisions & Scope Deferrals
+
+To maintain a lean, high-performance, and domain-agnostic core runtime, Chaab intentionally defers certain higher-level patterns:
+
+1. **Explicit `Tell` over Synchronous `Ask`**:
+   - `ref.Ask(ctx, msg, timeout) (any, error)` is deliberately omitted.
+   - *Why*: Synchronous request-reply patterns often encourage developers to treat actors like blocking RPC servers, leading to thread exhaustion and cascading timeout failures. Chaab promotes non-blocking asynchronous message passing (`ref.Tell`) with explicit response channels.
+2. **Direct Addressing over Actor Routers**:
+   - High-level actor routers (e.g., `RoundRobinPool` or `BroadcastPool` forwarding to groups of duplicate worker actors) are omitted from the core runtime.
+   - *Why*: The execution runtime already implements round-robin scheduling and work-stealing across worker threads internally. Higher-level load-balancing facades over multiple actor references remain an application-level responsibility rather than runtime complexity.
+
 

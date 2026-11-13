@@ -173,6 +173,43 @@ func TestSystem_UnregisterUpdatesRegistry(t *testing.T) {
 	}
 }
 
+func TestSystem_StopAndStopActor(t *testing.T) {
+	sys := actor.NewSystem()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = sys.Shutdown(ctx)
+	})
+
+	// Test Stop
+	ref1, err := sys.CreateActor(&testConsumerActor{})
+	if err != nil {
+		t.Fatalf("create actor 1: %v", err)
+	}
+
+	if err := sys.Stop(ref1.ID()); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	if _, ok := sys.GetActor(ref1.ID()); ok {
+		t.Fatalf("expected actor %s to be removed after Stop", ref1.ID())
+	}
+
+	// Test StopActor
+	ref2, err := sys.CreateActor(&testConsumerActor{})
+	if err != nil {
+		t.Fatalf("create actor 2: %v", err)
+	}
+
+	if err := sys.StopActor(ref2.ID()); err != nil {
+		t.Fatalf("StopActor failed: %v", err)
+	}
+
+	if _, ok := sys.GetActor(ref2.ID()); ok {
+		t.Fatalf("expected actor %s to be removed after StopActor", ref2.ID())
+	}
+}
+
 type systemPanicActor struct {
 	panicked chan struct{}
 }

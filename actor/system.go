@@ -131,8 +131,9 @@ func (s *System) GetActor(id string) (*ActorRef, bool) {
 	return cell.Ref, true
 }
 
-// Unregister stops an actor and removes it from the system registry.
-func (s *System) Unregister(id string) error {
+// Stop gracefully stops an actor: closes its mailbox, waits for all buffered messages
+// to drain, terminates its execution in the dispatcher, and evicts it from the system registry.
+func (s *System) Stop(id string) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -155,6 +156,17 @@ func (s *System) Unregister(id string) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// StopActor is an alias for Stop.
+func (s *System) StopActor(id string) error {
+	return s.Stop(id)
+}
+
+// Unregister stops an actor and removes it from the system registry.
+// Deprecated: Prefer Stop or StopActor for idiomatic lifecycle management.
+func (s *System) Unregister(id string) error {
+	return s.Stop(id)
 }
 
 // Shutdown initiates graceful shutdown of the dispatcher and its actors.

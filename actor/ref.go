@@ -1,10 +1,14 @@
 package actor
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type ActorRef struct {
 	id      string
 	mailbox *Mailbox
+	system  *System
 }
 
 func (r *ActorRef) ID() string {
@@ -23,7 +27,18 @@ func (r *ActorRef) Mailbox() *Mailbox {
 
 // Tell asynchronously enqueues a message for the actor.
 func (reference *ActorRef) Tell(ctx context.Context, message Message) error {
-	if reference == nil || reference.mailbox == nil {
+	if reference == nil {
+		return ErrActorStopped
+	}
+	if reference.mailbox == nil {
+		if reference.system != nil && message != nil {
+			reference.system.PublishDeadLetter(DeadLetter{
+				RecipientID: reference.id,
+				Message:     message,
+				Reason:      ErrActorStopped,
+				Timestamp:   time.Now(),
+			})
+		}
 		return ErrActorStopped
 	}
 	if ctx == nil {
@@ -32,5 +47,15 @@ func (reference *ActorRef) Tell(ctx context.Context, message Message) error {
 	if message == nil {
 		return ErrInvalidMessage
 	}
-	return reference.mailbox.Send(ctx, message)
+
+	err := reference.mailbox.Send(ctx, message)
+	if err != nil && reference.system != nil {
+		reference.system.PublishDeadLetter(DeadLetter{
+			RecipientID: reference.id,
+			Message:     message,
+			Reason:      err,
+			Timestamp:   time.Now(),
+		})
+	}
+	return err
 }

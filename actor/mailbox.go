@@ -28,6 +28,7 @@ type Mailbox struct {
 	strategy  OverflowStrategy
 	mu        sync.RWMutex
 	notifier  func()
+	onDrop    func(dropped Message, reason error)
 	closed    bool
 	done      chan struct{}
 	closeDone chan struct{}
@@ -61,6 +62,23 @@ func (m *Mailbox) Capacity() int {
 // Strategy returns the overflow policy configured for this mailbox.
 func (m *Mailbox) Strategy() OverflowStrategy {
 	return m.strategy
+}
+
+// SetOnDrop registers a callback invoked when a message is evicted or discarded.
+func (m *Mailbox) SetOnDrop(fn func(dropped Message, reason error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onDrop = fn
+}
+
+func (m *Mailbox) notifyDrop(dropped Message, reason error) {
+	m.mu.RLock()
+	fn := m.onDrop
+	m.mu.RUnlock()
+
+	if fn != nil {
+		fn(dropped, reason)
+	}
 }
 
 // Send adds a message to the mailbox according to its configured OverflowStrategy.
@@ -110,7 +128,8 @@ func (m *Mailbox) Send(ctx context.Context, message Message) error {
 		case <-m.done:
 			return ErrActorStopped
 		default:
-			// Discard incoming message without failing the caller
+			// Discard incoming message and report drop
+			m.notifyDrop(message, ErrMailboxFull)
 			return nil
 		}
 
@@ -127,8 +146,8 @@ func (m *Mailbox) Send(ctx context.Context, message Message) error {
 			default:
 				// Mailbox is full: evict one oldest message to make room
 				select {
-				case <-m.messages:
-					// Oldest evicted! Loop back to enqueue.
+				case dropped := <-m.messages:
+					m.notifyDrop(dropped, ErrMailboxFull)
 				default:
 					// Space opened concurrently by consumer
 				}

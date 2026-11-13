@@ -107,16 +107,53 @@ const (
 
 ---
 
-### 4. Messaging (`ActorRef`)
+### 5. Messaging (`ActorRef`)
 
 | Method | What It Does (Under the Hood) |
 | :--- | :--- |
 | `ref.ID()` | Returns the actor's unique identifier string (e.g., `actor-1`). |
-| `ref.Tell(ctx, message)` | **Asynchronously enqueues a message.**<br>- Validates inputs (`ErrNilContext`, `ErrInvalidMessage`).<br>- If the actor is stopped, returns `ErrActorStopped`.<br>- Pushes message to mailbox channel.<br>- If mailbox is full, blocks until space becomes available or `ctx` is cancelled.<br>- Notifies the dispatcher that new work is ready. |
+| `ref.Tell(ctx, message)` | **Asynchronously enqueues a message.**<br>- Validates inputs (`ErrNilContext`, `ErrInvalidMessage`).<br>- If the actor is stopped, publishes a `DeadLetter` and returns `ErrActorStopped`.<br>- Pushes message to mailbox channel.<br>- If mailbox overflows, applies the configured `OverflowStrategy` (and publishes a `DeadLetter` if rejected or evicted).<br>- Notifies the dispatcher that new work is ready. |
 
 ---
 
-### 5. Supervision & Fault Tolerance
+### 6. Dead Letter Office (`DeadLetters`)
+
+Undeliverable, rejected, or evicted messages are never silently dropped; they are wrapped into a `DeadLetter` and published to the system-wide Dead Letter event bus.
+
+```go
+type DeadLetter struct {
+    RecipientID string
+    Message     Message
+    Reason      error
+    Timestamp   time.Time
+}
+```
+
+#### Subscribing to Dead Letters
+
+```go
+// Subscribe to dead letters (returns an unsubscribe function)
+unsubscribe := sys.SubscribeDeadLetters(func(letter actor.DeadLetter) {
+    log.Printf("DEAD LETTER: recipient=%s msg=%v reason=%v",
+        letter.RecipientID, letter.Message, letter.Reason)
+    
+    // Emit Prometheus metric or trigger PagerDuty alert
+    deadLettersTotal.WithLabelValues(letter.RecipientID).Inc()
+})
+
+// Cleanly detach when done
+defer unsubscribe()
+```
+
+#### Where Dead Letters Are Emitted
+1. **Stopped Actor Delivery**: Messages sent via `ref.Tell` to an actor that was stopped with `sys.Stop(id)`.
+2. **`OverflowFailFast`**: Messages rejected when mailbox capacity is full.
+3. **`OverflowDropOldest`**: Stale messages evicted from the front of the mailbox ring buffer.
+4. **`OverflowDropNewest`**: Incoming messages discarded under peak load.
+
+---
+
+### 7. Supervision & Fault Tolerance
 
 Chaab implements Akka/OTP-style supervision semantics:
 

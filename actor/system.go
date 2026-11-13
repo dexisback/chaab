@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 const defaultMailBoxCapacity = 100
@@ -12,11 +13,12 @@ const defaultMailBoxCapacity = 100
 // System manages actor lifecycles, assigns unique IDs, maintains an
 // active actor registry for lookup, and coordinates with a Dispatcher for execution.
 type System struct {
-	mu         sync.RWMutex
-	actors     map[string]*ActorCell
-	nextID     uint64
-	dispatcher Dispatcher
-	closed     bool
+	mu          sync.RWMutex
+	actors      map[string]*ActorCell
+	nextID      uint64
+	dispatcher  Dispatcher
+	deadLetters *deadLetterBus
+	closed      bool
 }
 
 // SystemOption configures a System.
@@ -32,13 +34,31 @@ func WithDispatcher(dispatcher Dispatcher) SystemOption {
 // NewSystem creates a new actor system. By default, it uses a GoroutineDispatcher.
 func NewSystem(opts ...SystemOption) *System {
 	s := &System{
-		actors:     make(map[string]*ActorCell),
-		dispatcher: NewGoroutineDispatcher(),
+		actors:      make(map[string]*ActorCell),
+		dispatcher:  NewGoroutineDispatcher(),
+		deadLetters: newDeadLetterBus(),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// SubscribeDeadLetters registers a listener callback to receive all dead letters.
+// It returns an unsubscribe function to safely detach the listener.
+func (s *System) SubscribeDeadLetters(listener DeadLetterListener) func() {
+	if s == nil || s.deadLetters == nil {
+		return func() {}
+	}
+	return s.deadLetters.subscribe(listener)
+}
+
+// PublishDeadLetter broadcasts a dead letter to all active listeners.
+func (s *System) PublishDeadLetter(letter DeadLetter) {
+	if s == nil || s.deadLetters == nil {
+		return
+	}
+	s.deadLetters.publish(letter)
 }
 
 // NewSystemWithDispatcher creates a new actor system configured with the provided dispatcher.
@@ -126,7 +146,17 @@ func (s *System) CreateActorFromFactory(factory ActorFactory, opts ...ActorOptio
 	reference := &ActorRef{
 		id:      id,
 		mailbox: mailbox,
+		system:  s,
 	}
+
+	mailbox.SetOnDrop(func(dropped Message, reason error) {
+		s.PublishDeadLetter(DeadLetter{
+			RecipientID: id,
+			Message:     dropped,
+			Reason:      reason,
+			Timestamp:   time.Now(),
+		})
+	})
 
 	cell := &ActorCell{
 		Actor:      initialActor,

@@ -331,14 +331,66 @@ func main() {
 
 ---
 
-## Verification & Testing
+## Example Application: Banking Simulator
 
-Every dispatcher and system component adheres to strict concurrency invariants and passes the Go race detector:
+A complete reference implementation demonstrating all core capabilities of Chaab is provided in [`examples/banking`](examples/banking) with a runnable CLI in [`cmd/bank-sim`](cmd/bank-sim).
+
+### Capabilities Demonstrated:
+- **Asynchronous Messaging**: Inter-account transfers (`Transfer`, `Deposit`, `Withdraw`) with zero lock contention across actors.
+- **Actor Lifecycle Hooks**: `AccountActor` implements `PreStart(ctx)` and `PostStop(ctx)` to manage resource lifecycles.
+- **Fault-Tolerant Supervision**: Bounded `OneForOneStrategy` intercepts unhandled panics, safely recreates pristine actor state via `ActorFactory`, and preserves the existing mailbox and `ActorRef`.
+- **Backpressure & Load-Shedding**: Bounded mailbox capacity (`WithMailboxCapacity(1)`) paired with `OverflowFailFast` to shed load during bursts.
+- **Dead Letter Office**: Captures rejected, evicted, or undeliverable messages via `SubscribeDeadLetters`.
+- **Telemetry & Queue Inspection**: Instantaneous queue depth monitoring via `ref.MailboxDepth()` and runtime telemetry snapshots via `sys.Stats()`.
+
+### Running the Simulator:
+```bash
+go run ./cmd/bank-sim
+```
+
+**Sample Output:**
+```text
+2026/11/14 02:19:52 ERROR actor panicked while processing a message actor_id=actor-2 panic="simulated account crash: simulated unhandled panic"
+--- Bank Simulation Completed Successfully ---
+Alice Final Balance: $800 (Expected: $800)
+Bob Final Balance:   $550 (Expected: $550 after restart)
+Total Messages:      7
+Total Restarts:      1
+Dead Letters:        2
+```
+
+---
+
+## Verification, Testing & Benchmarking
+
+### 1. Concurrency & Race Detector Suite
+Every dispatcher and runtime component adheres to strict concurrency invariants and passes the Go race detector:
 
 ```bash
-# Run full conformance and unit suite
+# Run full unit and integration suite across all packages
 go test -v ./...
 
 # Run race condition detector
 go test -count=1 -race ./...
 ```
+
+### 2. Performance Benchmarking
+Chaab includes a comprehensive benchmark suite under [`benchmarks/`](benchmarks/) measuring raw dispatch throughput, sub-microsecond round-trip latency, high fan-out actor allocation, and work-stealing efficiency:
+
+```bash
+# Measure message throughput (ns/op, B/op, allocs/op across all 3 dispatchers)
+go test -bench=BenchmarkThroughput -benchmem ./benchmarks
+
+# Measure round-trip ping-pong latency (reports p50, p95, p99 percentiles)
+go test -bench=BenchmarkPingPong -benchmem ./benchmarks
+
+# Measure massive actor concurrency (5,000 actors fan-out)
+go test -bench=BenchmarkFanOut -benchmem ./benchmarks
+
+# Measure work-stealing speedup under skewed CPU workload
+go test -bench=BenchmarkWorkStealingSkewed -benchmem ./benchmarks
+
+# Run the complete benchmark suite
+go test -bench=. -benchmem ./benchmarks
+```
+

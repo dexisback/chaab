@@ -123,6 +123,12 @@ func (s *System) CreateActorFromFactory(factory ActorFactory, opts ...ActorOptio
 		return nil, ErrNilActor
 	}
 
+	if starter, ok := initialActor.(PreStarter); ok {
+		if err := starter.PreStart(context.Background()); err != nil {
+			return nil, fmt.Errorf("actor PreStart failed: %w", err)
+		}
+	}
+
 	cfg := &actorOptions{
 		mailboxCapacity:  defaultMailBoxCapacity,
 		overflowStrategy: OverflowBlock,

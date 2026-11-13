@@ -101,13 +101,32 @@ const (
 
 | Method | What It Does (Under the Hood) |
 | :--- | :--- |
-| `sys.Stop(id)` | **Gracefully stops and evicts an actor.**<br>1. Looks up the actor in `System.actors`.<br>2. Closes the actor's `Mailbox` (future `Tell` calls immediately return `ErrActorStopped`).<br>3. **Waits for all currently buffered messages to finish processing** (graceful draining).<br>4. Terminates the actor's worker goroutine or task execution in the dispatcher.<br>5. Evicts the actor from the `System.actors` registry map. |
+| `sys.Stop(id)` | **Gracefully stops and evicts an actor.**<br>1. Looks up the actor in `System.actors`.<br>2. Closes the actor's `Mailbox` (future `Tell` calls immediately return `ErrActorStopped`).<br>3. **Waits for all currently buffered messages to finish processing** (graceful draining).<br>4. Terminates the actor's worker goroutine or task execution in the dispatcher.<br>5. Executes `PostStop(ctx)` on the actor if implemented.<br>6. Evicts the actor from the `System.actors` registry map. |
 | `sys.StopActor(id)` | Explicit semantic alias for `sys.Stop(id)`. |
 | `sys.Unregister(id)` | Legacy alias for `sys.Stop(id)`. Kept for backward compatibility. |
 
 ---
 
-### 5. Messaging (`ActorRef`)
+### 5. Actor Lifecycle Hooks (`PreStart` & `PostStop`)
+
+Actors can optionally implement lifecycle hooks to allocate and clean up resources (database pools, tickers, network sockets):
+
+```go
+type PreStarter interface {
+    PreStart(ctx context.Context) error
+}
+
+type PostStopper interface {
+    PostStop(ctx context.Context) error
+}
+```
+
+* **`PreStart(ctx)`**: Called once when the actor is created (before receiving its first message) and again on any fresh replacement instance during a supervised restart. If initial `PreStart` fails, `CreateActor` returns an error and aborts registration.
+* **`PostStop(ctx)`**: Called when the actor terminates (via `sys.Stop()`, `sys.Shutdown()`, or after exceeding restart limits) and called on the crashed instance prior to replacement during a supervised restart.
+
+---
+
+### 6. Messaging (`ActorRef`)
 
 | Method | What It Does (Under the Hood) |
 | :--- | :--- |
@@ -116,7 +135,7 @@ const (
 
 ---
 
-### 6. Dead Letter Office (`DeadLetters`)
+### 7. Dead Letter Office (`DeadLetters`)
 
 Undeliverable, rejected, or evicted messages are never silently dropped; they are wrapped into a `DeadLetter` and published to the system-wide Dead Letter event bus.
 
@@ -153,7 +172,7 @@ defer unsubscribe()
 
 ---
 
-### 7. Supervision & Fault Tolerance
+### 8. Supervision & Fault Tolerance
 
 Chaab implements Akka/OTP-style supervision semantics:
 

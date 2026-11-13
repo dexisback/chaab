@@ -89,6 +89,7 @@ func (d *GoroutineDispatcher) run(
 	defer mailbox.Close()
 	defer d.wg.Done()
 	defer close(worker.done)
+	defer cell.InvokePostStop(context.Background())
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error(

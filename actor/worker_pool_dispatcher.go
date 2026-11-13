@@ -282,16 +282,17 @@ func (d *WorkerPoolDispatcher) invoke(
 // finish marks an actor as finished and releases its resources.
 func (d *WorkerPoolDispatcher) finish(task *workerPoolTask) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	if task.finished {
+		d.mu.Unlock()
 		return
 	}
 
 	task.finished = true
 	delete(d.tasks, task.cell.Ref.ID())
+	d.mu.Unlock()
 
 	task.cancel()
+	_ = task.cell.InvokePostStop(context.Background())
 	close(task.done)
 }
 

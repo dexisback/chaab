@@ -384,17 +384,17 @@ func (dispatcher *WorkStealingDispatcher) invoke(
 
 func (dispatcher *WorkStealingDispatcher) finish(task *workStealingTask) {
 	dispatcher.mu.Lock()
-	defer dispatcher.mu.Unlock()
-
-	if task.finished{
-		return 
+	if task.finished {
+		dispatcher.mu.Unlock()
+		return
 	}
 
-
-	task.finished = true 
+	task.finished = true
 	delete(dispatcher.tasks, task.cell.Ref.ID())
+	dispatcher.mu.Unlock()
 
 	task.cancel()
+	_ = task.cell.InvokePostStop(context.Background())
 	close(task.done)
 }
 

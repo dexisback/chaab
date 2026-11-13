@@ -16,4 +16,16 @@ type Actor interface {
 // to ensure internal state mutations from failures are cleanly discarded.
 type ActorFactory func() (Actor, error)
 
+// PreStarter is an optional interface implemented by actors requiring resource
+// allocation or initialization (e.g. database pools, tickers) before receiving messages.
+type PreStarter interface {
+	PreStart(ctx context.Context) error
+}
+
+// PostStopper is an optional interface implemented by actors requiring resource
+// cleanup (e.g. closing sockets, stopping timers) when stopped or replaced.
+type PostStopper interface {
+	PostStop(ctx context.Context) error
+}
+
 //we intentionally not write mailbox/goroutines/channels/scheduling logic here. these belong to the runtime, not individual actors

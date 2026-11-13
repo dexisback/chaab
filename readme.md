@@ -48,12 +48,56 @@ flowchart TD
 | Method | What It Does (Under the Hood) |
 | :--- | :--- |
 | `sys.CreateActor(actor, opts...)` | **Convenience creation for stateless or test actors.** Wraps the provided `Actor` instance in a static factory and delegates to `CreateActorFromFactory`. |
-| `sys.CreateActorFromFactory(factory, opts...)` | **Recommended production creation.**<br>1. Executes `factory()` to construct the initial actor instance.<br>2. Generates a unique monotonic ID (`actor-1`, `actor-2`).<br>3. Allocates a bounded `Mailbox` (capacity 100).<br>4. Constructs an addressable `ActorRef`.<br>5. Bundles them into an `ActorCell`, retaining the factory for supervised restarts.<br>6. Registers the cell with the `Dispatcher` to begin scheduling.<br>7. Stores the cell in `System.actors` registry and returns the `ActorRef`. |
+| `sys.CreateActorFromFactory(factory, opts...)` | **Recommended production creation.**<br>1. Executes `factory()` to construct the initial actor instance.<br>2. Evaluates configuration options (`WithSupervisor`, `WithMailboxCapacity`, `WithOverflowStrategy`).<br>3. Generates a unique monotonic ID (`actor-1`, `actor-2`).<br>4. Allocates a `Mailbox` with configured capacity and overflow strategy.<br>5. Constructs an addressable `ActorRef`.<br>6. Bundles them into an `ActorCell`, retaining the factory for supervised restarts.<br>7. Registers the cell with the `Dispatcher` to begin scheduling.<br>8. Stores the cell in `System.actors` registry and returns the `ActorRef`. |
 | `sys.GetActor(id)` | Performs a thread-safe lookup in the registry. Returns `(*ActorRef, true)` if active, or `(nil, false)` if missing or stopped. |
+
+#### Actor Configuration Options
+
+```go
+// Configure supervision policy
+actor.WithSupervisor(supervisor)
+
+// Configure custom mailbox buffer capacity (defaults to 100)
+actor.WithMailboxCapacity(capacity)
+
+// Configure backpressure / overflow strategy
+actor.WithOverflowStrategy(strategy)
+```
 
 ---
 
-### 3. Actor Lifecycle: Stopping & Teardown
+### 3. Mailbox Backpressure & Overflow Strategies
+
+Chaab provides four distinct load-shedding and backpressure strategies to handle mailbox saturation:
+
+```go
+type OverflowStrategy int
+
+const (
+    // OverflowBlock waits until buffer space opens up or ctx expires (default).
+    OverflowBlock OverflowStrategy = iota
+
+    // OverflowFailFast immediately returns ErrMailboxFull without blocking (0ms caller latency).
+    OverflowFailFast
+
+    // OverflowDropOldest evicts the oldest message in the mailbox to make room for the new message (Ring Buffer).
+    OverflowDropOldest
+
+    // OverflowDropNewest silently discards the incoming message without blocking or failing the caller.
+    OverflowDropNewest
+)
+```
+
+| Strategy | Caller Latency | Data Dropped? | Primary Use Case |
+| :--- | :---: | :---: | :--- |
+| **`OverflowBlock`** | Can be high (waits for space) | **Never** | Database writers, batch processing, default safe fallback. |
+| **`OverflowFailFast`** | $\sim 0\text{ms}$ (instant return) | **Never** (returns `ErrMailboxFull`) | User-facing HTTP APIs, payment webhooks. |
+| **`OverflowDropOldest`** | $\sim 0\text{ms}$ (evicts & inserts) | **Yes** (oldest stale items) | Live market feeds, IoT sensors, GPS trackers. |
+| **`OverflowDropNewest`** | $\sim 0\text{ms}$ (discards incoming) | **Yes** (newest burst items) | High-volume analytics, load shedding during traffic spikes. |
+
+---
+
+### 4. Actor Lifecycle: Stopping & Teardown
 
 | Method | What It Does (Under the Hood) |
 | :--- | :--- |

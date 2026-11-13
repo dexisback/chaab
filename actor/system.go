@@ -46,13 +46,33 @@ func NewSystemWithDispatcher(dispatcher Dispatcher) *System {
 	return NewSystem(WithDispatcher(dispatcher))
 }
 
+type actorOptions struct {
+	mailboxCapacity  int
+	overflowStrategy OverflowStrategy
+	supervisor       Supervisor
+}
+
 // ActorOption configures individual actor cells upon creation.
-type ActorOption func(*ActorCell)
+type ActorOption func(*actorOptions)
 
 // WithSupervisor attaches a custom Supervisor to an actor.
 func WithSupervisor(supervisor Supervisor) ActorOption {
-	return func(cell *ActorCell) {
-		cell.Supervisor = supervisor
+	return func(o *actorOptions) {
+		o.supervisor = supervisor
+	}
+}
+
+// WithMailboxCapacity configures the buffer size of the actor's mailbox.
+func WithMailboxCapacity(capacity int) ActorOption {
+	return func(o *actorOptions) {
+		o.mailboxCapacity = capacity
+	}
+}
+
+// WithOverflowStrategy configures the backpressure/overflow policy of the actor's mailbox.
+func WithOverflowStrategy(strategy OverflowStrategy) ActorOption {
+	return func(o *actorOptions) {
+		o.overflowStrategy = strategy
 	}
 }
 
@@ -83,6 +103,14 @@ func (s *System) CreateActorFromFactory(factory ActorFactory, opts ...ActorOptio
 		return nil, ErrNilActor
 	}
 
+	cfg := &actorOptions{
+		mailboxCapacity:  defaultMailBoxCapacity,
+		overflowStrategy: OverflowBlock,
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -93,7 +121,7 @@ func (s *System) CreateActorFromFactory(factory ActorFactory, opts ...ActorOptio
 	s.nextID++
 	id := fmt.Sprintf("actor-%d", s.nextID)
 
-	mailbox := NewMailBox(defaultMailBoxCapacity)
+	mailbox := NewMailboxWithStrategy(cfg.mailboxCapacity, cfg.overflowStrategy)
 
 	reference := &ActorRef{
 		id:      id,
@@ -101,14 +129,11 @@ func (s *System) CreateActorFromFactory(factory ActorFactory, opts ...ActorOptio
 	}
 
 	cell := &ActorCell{
-		Actor:   initialActor,
-		Ref:     reference,
-		Mailbox: mailbox,
-		Factory: factory,
-	}
-
-	for _, opt := range opts {
-		opt(cell)
+		Actor:      initialActor,
+		Ref:        reference,
+		Mailbox:    mailbox,
+		Factory:    factory,
+		Supervisor: cfg.supervisor,
 	}
 
 	if err := s.dispatcher.Register(cell); err != nil {

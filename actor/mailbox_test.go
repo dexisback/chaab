@@ -296,3 +296,153 @@ func TestMailbox_BlockedSendersUnblockedOnClose(t *testing.T) {
 		}
 	}
 }
+
+func TestMailbox_OverflowFailFast(t *testing.T) {
+	mb := actor.NewMailboxWithStrategy(2, actor.OverflowFailFast)
+	ctx := context.Background()
+
+	if err := mb.Send(ctx, "msg1"); err != nil {
+		t.Fatalf("send 1 failed: %v", err)
+	}
+	if err := mb.Send(ctx, "msg2"); err != nil {
+		t.Fatalf("send 2 failed: %v", err)
+	}
+
+	// 3rd message exceeds capacity 2: must immediately return ErrMailboxFull
+	err := mb.Send(ctx, "msg3")
+	if !errors.Is(err, actor.ErrMailboxFull) {
+		t.Fatalf("expected ErrMailboxFull, got: %v", err)
+	}
+}
+
+func TestMailbox_OverflowDropOldest(t *testing.T) {
+	mb := actor.NewMailboxWithStrategy(3, actor.OverflowDropOldest)
+	ctx := context.Background()
+
+	// Fill to capacity
+	_ = mb.Send(ctx, 1)
+	_ = mb.Send(ctx, 2)
+	_ = mb.Send(ctx, 3)
+
+	// Send 4 and 5 -> should evict 1 and 2
+	if err := mb.Send(ctx, 4); err != nil {
+		t.Fatalf("send 4 failed: %v", err)
+	}
+	if err := mb.Send(ctx, 5); err != nil {
+		t.Fatalf("send 5 failed: %v", err)
+	}
+
+	// Drain messages: expected [3, 4, 5]
+	expected := []int{3, 4, 5}
+	for i, exp := range expected {
+		msg, err := mb.Receive(ctx)
+		if err != nil {
+			t.Fatalf("receive %d failed: %v", i, err)
+		}
+		if msg != exp {
+			t.Fatalf("at index %d: expected %d, got %v", i, exp, msg)
+		}
+	}
+}
+
+func TestMailbox_OverflowDropNewest(t *testing.T) {
+	mb := actor.NewMailboxWithStrategy(3, actor.OverflowDropNewest)
+	ctx := context.Background()
+
+	// Fill to capacity
+	_ = mb.Send(ctx, 1)
+	_ = mb.Send(ctx, 2)
+	_ = mb.Send(ctx, 3)
+
+	// Send 4 and 5 -> should be discarded without error
+	if err := mb.Send(ctx, 4); err != nil {
+		t.Fatalf("send 4 failed: %v", err)
+	}
+	if err := mb.Send(ctx, 5); err != nil {
+		t.Fatalf("send 5 failed: %v", err)
+	}
+
+	// Drain messages: expected [1, 2, 3]
+	expected := []int{1, 2, 3}
+	for i, exp := range expected {
+		msg, err := mb.Receive(ctx)
+		if err != nil {
+			t.Fatalf("receive %d failed: %v", i, err)
+		}
+		if msg != exp {
+			t.Fatalf("at index %d: expected %d, got %v", i, exp, msg)
+		}
+	}
+}
+
+func TestSystem_CustomMailboxCapacityAndStrategy(t *testing.T) {
+	sys := actor.NewSystem()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = sys.Shutdown(ctx)
+	})
+
+	// Create an actor with capacity 1 and OverflowFailFast
+	ref, err := sys.CreateActor(&testConsumerActor{},
+		actor.WithMailboxCapacity(1),
+		actor.WithOverflowStrategy(actor.OverflowFailFast),
+	)
+	if err != nil {
+		t.Fatalf("create actor failed: %v", err)
+	}
+
+	if ref.Mailbox().Capacity() != 1 {
+		t.Fatalf("expected capacity 1, got %d", ref.Mailbox().Capacity())
+	}
+	if ref.Mailbox().Strategy() != actor.OverflowFailFast {
+		t.Fatalf("expected OverflowFailFast, got %v", ref.Mailbox().Strategy())
+	}
+
+	// Fill the single slot
+	if err := ref.Tell(context.Background(), "first"); err != nil {
+		t.Fatalf("first tell failed: %v", err)
+	}
+
+	// Second tell should immediately fail fast with ErrMailboxFull
+	err = ref.Tell(context.Background(), "second")
+	if !errors.Is(err, actor.ErrMailboxFull) {
+		t.Fatalf("expected ErrMailboxFull on second tell, got: %v", err)
+	}
+}
+
+func TestMailbox_ConcurrentOverflowDropOldest(t *testing.T) {
+	const capacity = 5
+	mb := actor.NewMailboxWithStrategy(capacity, actor.OverflowDropOldest)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	const senders = 10
+	const msgsPerSender = 50
+
+	for s := 0; s < senders; s++ {
+		wg.Add(1)
+		go func(sID int) {
+			defer wg.Done()
+			for i := 0; i < msgsPerSender; i++ {
+				_ = mb.Send(ctx, sID*1000+i)
+			}
+		}(s)
+	}
+
+	wg.Wait()
+
+	// Drain remaining messages: capacity must be bounded at exactly 5
+	drained := 0
+	for {
+		_, ok, _ := mb.TryReceive()
+		if !ok {
+			break
+		}
+		drained++
+	}
+
+	if drained != capacity {
+		t.Fatalf("expected mailbox to contain exactly %d items, got %d", capacity, drained)
+	}
+}

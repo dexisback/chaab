@@ -383,8 +383,19 @@ func TestSystem_CustomMailboxCapacityAndStrategy(t *testing.T) {
 		_ = sys.Shutdown(ctx)
 	})
 
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+
 	// Create an actor with capacity 1 and OverflowFailFast
-	ref, err := sys.CreateActor(&testConsumerActor{},
+	ref, err := sys.CreateActor(&testConsumerActor{
+		onMessage: func(msg any) {
+			if msg == "block" {
+				close(started)
+				<-release
+			}
+		},
+	},
 		actor.WithMailboxCapacity(1),
 		actor.WithOverflowStrategy(actor.OverflowFailFast),
 	)
@@ -399,12 +410,18 @@ func TestSystem_CustomMailboxCapacityAndStrategy(t *testing.T) {
 		t.Fatalf("expected OverflowFailFast, got %v", ref.Mailbox().Strategy())
 	}
 
-	// Fill the single slot
+	// Active message occupies the worker
+	if err := ref.Tell(context.Background(), "block"); err != nil {
+		t.Fatalf("block tell failed: %v", err)
+	}
+	<-started
+
+	// Fill the single buffer slot
 	if err := ref.Tell(context.Background(), "first"); err != nil {
 		t.Fatalf("first tell failed: %v", err)
 	}
 
-	// Second tell should immediately fail fast with ErrMailboxFull
+	// Second buffered tell should immediately fail fast with ErrMailboxFull
 	err = ref.Tell(context.Background(), "second")
 	if !errors.Is(err, actor.ErrMailboxFull) {
 		t.Fatalf("expected ErrMailboxFull on second tell, got: %v", err)

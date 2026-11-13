@@ -406,4 +406,3 @@ func (e *contractErrorResilientActor) Receive(ctx context.Context, msg any) erro
 	}
 	return nil
 }
-

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"runtime"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type WorkerPoolConfig struct {
@@ -33,10 +35,16 @@ type WorkerPoolDispatcher struct {
 	tasks    map[string]*workerPoolTask
 	ready    []*workerPoolTask
 	config   WorkerPoolConfig
+	metrics  atomic.Pointer[metricsHolder]
 	closed   bool
 	stopping bool
 	done     chan struct{}
 	wg       sync.WaitGroup
+}
+
+// SetMetrics configures the telemetry metrics collector for the dispatcher.
+func (d *WorkerPoolDispatcher) SetMetrics(m MetricsCollector) {
+	setMetricsHolder(&d.metrics, m)
 }
 
 func NewWorkerPoolDispatcher(config WorkerPoolConfig) *WorkerPoolDispatcher {
@@ -230,6 +238,14 @@ func (d *WorkerPoolDispatcher) invoke(
 	message Message,
 ) (panicked bool, shouldStop bool) {
 	var panicVal any
+	var receiveErr error
+
+	actorID := ""
+	if task != nil && task.cell != nil && task.cell.Ref != nil {
+		actorID = task.cell.Ref.ID()
+	}
+
+	start := time.Now()
 
 	func() {
 		defer func() {
@@ -238,24 +254,27 @@ func (d *WorkerPoolDispatcher) invoke(
 				panicVal = r
 				slog.Error(
 					"actor panicked while processing a message",
-					"actor_id", task.cell.Ref.ID(),
+					"actor_id", actorID,
 					"panic", r,
 				)
 			}
 		}()
 
 		if err := task.cell.CurrentActor().Receive(task.ctx, message); err != nil {
+			receiveErr = err
 			slog.Error(
 				"actor message processing failed",
-				"actor_id", task.cell.Ref.ID(),
+				"actor_id", actorID,
 				"error", err,
 			)
-			failure := Failure{ActorID: task.cell.Ref.ID(), Err: err}
+			failure := Failure{ActorID: actorID, Err: err}
 			directive := task.cell.HandleFailure(task.ctx, failure)
 			if directive == DirectiveRestart {
 				if restartErr := task.cell.Restart(); restartErr != nil {
-					slog.Error("restart failed", "actor_id", task.cell.Ref.ID(), "error", restartErr)
+					slog.Error("restart failed", "actor_id", actorID, "error", restartErr)
 					shouldStop = true
+				} else {
+					resolveMetrics(&d.metrics, task.cell).ActorRestarted(actorID)
 				}
 			} else if directive == DirectiveStop {
 				shouldStop = true
@@ -263,19 +282,27 @@ func (d *WorkerPoolDispatcher) invoke(
 		}
 	}()
 
+	duration := time.Since(start)
+
 	if panicked {
-		failure := Failure{ActorID: task.cell.Ref.ID(), Panic: panicVal}
+		panicErr := fmt.Errorf("panic: %v", panicVal)
+		failure := Failure{ActorID: actorID, Panic: panicVal}
 		directive := task.cell.HandleFailure(task.ctx, failure)
 		if directive == DirectiveRestart {
 			if restartErr := task.cell.Restart(); restartErr != nil {
-				slog.Error("restart failed", "actor_id", task.cell.Ref.ID(), "error", restartErr)
+				slog.Error("restart failed", "actor_id", actorID, "error", restartErr)
+				resolveMetrics(&d.metrics, task.cell).MessageProcessed(actorID, duration, panicErr)
 				return false, true
 			}
+			resolveMetrics(&d.metrics, task.cell).ActorRestarted(actorID)
+			resolveMetrics(&d.metrics, task.cell).MessageProcessed(actorID, duration, panicErr)
 			return false, false
 		}
+		resolveMetrics(&d.metrics, task.cell).MessageProcessed(actorID, duration, panicErr)
 		return true, true
 	}
 
+	resolveMetrics(&d.metrics, task.cell).MessageProcessed(actorID, duration, receiveErr)
 	return false, shouldStop
 }
 

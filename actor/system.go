@@ -18,6 +18,7 @@ type System struct {
 	nextID      uint64
 	dispatcher  Dispatcher
 	deadLetters *deadLetterBus
+	metrics     MetricsCollector
 	closed      bool
 }
 
@@ -31,15 +32,28 @@ func WithDispatcher(dispatcher Dispatcher) SystemOption {
 	}
 }
 
-// NewSystem creates a new actor system. By default, it uses a GoroutineDispatcher.
+// WithMetrics sets the telemetry metrics collector for the actor system.
+func WithMetrics(collector MetricsCollector) SystemOption {
+	return func(s *System) {
+		if collector != nil {
+			s.metrics = collector
+		}
+	}
+}
+
+// NewSystem creates a new actor system. By default, it uses a GoroutineDispatcher and DefaultMetricsCollector.
 func NewSystem(opts ...SystemOption) *System {
 	s := &System{
 		actors:      make(map[string]*ActorCell),
 		dispatcher:  NewGoroutineDispatcher(),
 		deadLetters: newDeadLetterBus(),
+		metrics:     NewDefaultMetricsCollector(),
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if aware, ok := s.dispatcher.(interface{ SetMetrics(MetricsCollector) }); ok {
+		aware.SetMetrics(s.metrics)
 	}
 	return s
 }
@@ -53,12 +67,51 @@ func (s *System) SubscribeDeadLetters(listener DeadLetterListener) func() {
 	return s.deadLetters.subscribe(listener)
 }
 
-// PublishDeadLetter broadcasts a dead letter to all active listeners.
+// PublishDeadLetter broadcasts a dead letter to all active listeners and telemetry hooks.
 func (s *System) PublishDeadLetter(letter DeadLetter) {
-	if s == nil || s.deadLetters == nil {
+	if s == nil {
 		return
 	}
-	s.deadLetters.publish(letter)
+	if s.metrics != nil {
+		s.metrics.DeadLetterPublished(letter)
+	}
+	if s.deadLetters != nil {
+		s.deadLetters.publish(letter)
+	}
+}
+
+// Metrics returns the active telemetry collector.
+func (s *System) Metrics() MetricsCollector {
+	if s == nil || s.metrics == nil {
+		return noopMetricsCollector{}
+	}
+	return s.metrics
+}
+
+// Stats returns a point-in-time snapshot of runtime metrics.
+func (s *System) Stats() SystemStats {
+	if s == nil {
+		return SystemStats{}
+	}
+	s.mu.RLock()
+	active := len(s.actors)
+	s.mu.RUnlock()
+
+	var processed, restarts, steals, deadLetters uint64
+	if provider, ok := s.metrics.(StatsProvider); ok {
+		processed = provider.TotalProcessed()
+		restarts = provider.TotalRestarts()
+		steals = provider.TotalTaskSteals()
+		deadLetters = provider.TotalDeadLetters()
+	}
+
+	return SystemStats{
+		ActiveActors:     active,
+		TotalProcessed:   processed,
+		TotalRestarts:    restarts,
+		TotalTaskSteals:  steals,
+		TotalDeadLetters: deadLetters,
+	}
 }
 
 // NewSystemWithDispatcher creates a new actor system configured with the provided dispatcher.

@@ -208,6 +208,44 @@ strategy := actor.NewOneForOneStrategy(
 
 ---
 
+### 9. Observability, Metrics & Telemetry
+
+Chaab provides a zero-dependency telemetry interface that decouples internal runtime events from third-party metrics providers (Prometheus, OpenTelemetry, Datadog):
+
+```go
+type MetricsCollector interface {
+    // MessageProcessed records execution duration and completion error for each message.
+    MessageProcessed(actorID string, duration time.Duration, err error)
+
+    // ActorRestarted records when an actor fails and is restarted by supervision.
+    ActorRestarted(actorID string)
+
+    // TaskStolen records when an idle worker steals a task from another worker's queue.
+    TaskStolen(thiefWorkerID int, victimWorkerID int)
+
+    // DeadLetterPublished records when a message is dropped, rejected, or undeliverable.
+    DeadLetterPublished(letter DeadLetter)
+}
+```
+
+#### Runtime Telemetry Hooks:
+
+1. **`DefaultMetricsCollector`**: An atomic, lock-free in-memory collector enabled by default in `NewSystem()`.
+2. **`sys.Stats()`**: Returns a thread-safe point-in-time snapshot:
+   ```go
+   stats := sys.Stats()
+   fmt.Printf("Active Actors:     %d\n", stats.ActiveActors)
+   fmt.Printf("Total Processed:   %d\n", stats.TotalProcessed)
+   fmt.Printf("Total Restarts:    %d\n", stats.TotalRestarts)
+   fmt.Printf("Total Task Steals: %d\n", stats.TotalTaskSteals)
+   fmt.Printf("Total DeadLetters: %d\n", stats.TotalDeadLetters)
+   ```
+3. **`ref.MailboxDepth()`**: Returns the instantaneous number of queued messages waiting in an actor's mailbox (essential for monitoring queueing delay and detecting lagging actors).
+4. **Custom Integrations**: Pass custom metric collectors via `actor.WithMetrics(customCollector)`.
+
+
+---
+
 ## Execution Dispatchers
 
 Chaab includes three interchangeable execution dispatchers implementing the common `Dispatcher` interface:

@@ -17,22 +17,34 @@ type MetricsCollector interface {
 
 	// TaskStolen records when an idle worker steals a task from another worker's queue.
 	TaskStolen(thiefWorkerID int, victimWorkerID int)
+
+	// DeadLetterPublished records when a message cannot be delivered or is dropped.
+	DeadLetterPublished(letter DeadLetter)
+}
+
+// StatsProvider optionally exposes aggregate metric counters for SystemStats.
+type StatsProvider interface {
+	TotalProcessed() uint64
+	TotalRestarts() uint64
+	TotalTaskSteals() uint64
+	TotalDeadLetters() uint64
 }
 
 // SystemStats represents a snapshot of runtime metrics.
 type SystemStats struct {
-	ActiveActors      int
-	TotalProcessed    uint64
-	TotalRestarts     uint64
-	TotalTaskSteals   uint64
-	TotalDeadLetters  uint64
+	ActiveActors     int
+	TotalProcessed   uint64
+	TotalRestarts    uint64
+	TotalTaskSteals  uint64
+	TotalDeadLetters uint64
 }
 
 // DefaultMetricsCollector provides a lock-free, atomic in-memory telemetry collector.
 type DefaultMetricsCollector struct {
-	totalProcessed  atomic.Uint64
-	totalRestarts   atomic.Uint64
-	totalTaskSteals atomic.Uint64
+	totalProcessed   atomic.Uint64
+	totalRestarts    atomic.Uint64
+	totalTaskSteals  atomic.Uint64
+	totalDeadLetters atomic.Uint64
 }
 
 // NewDefaultMetricsCollector creates a new atomic in-memory metrics collector.
@@ -52,6 +64,10 @@ func (m *DefaultMetricsCollector) TaskStolen(thiefWorkerID int, victimWorkerID i
 	m.totalTaskSteals.Add(1)
 }
 
+func (m *DefaultMetricsCollector) DeadLetterPublished(letter DeadLetter) {
+	m.totalDeadLetters.Add(1)
+}
+
 // TotalProcessed returns the cumulative count of processed messages.
 func (m *DefaultMetricsCollector) TotalProcessed() uint64 {
 	return m.totalProcessed.Load()
@@ -67,9 +83,39 @@ func (m *DefaultMetricsCollector) TotalTaskSteals() uint64 {
 	return m.totalTaskSteals.Load()
 }
 
+// TotalDeadLetters returns the cumulative count of published dead letters.
+func (m *DefaultMetricsCollector) TotalDeadLetters() uint64 {
+	return m.totalDeadLetters.Load()
+}
+
 // noopMetricsCollector discards all metrics events.
 type noopMetricsCollector struct{}
 
 func (n noopMetricsCollector) MessageProcessed(actorID string, duration time.Duration, err error) {}
 func (n noopMetricsCollector) ActorRestarted(actorID string)                                      {}
 func (n noopMetricsCollector) TaskStolen(thiefWorkerID int, victimWorkerID int)                   {}
+func (n noopMetricsCollector) DeadLetterPublished(letter DeadLetter)                              {}
+
+type metricsHolder struct {
+	collector MetricsCollector
+}
+
+func setMetricsHolder(holder *atomic.Pointer[metricsHolder], m MetricsCollector) {
+	if m == nil {
+		holder.Store(nil)
+		return
+	}
+	holder.Store(&metricsHolder{collector: m})
+}
+
+func resolveMetrics(holder *atomic.Pointer[metricsHolder], cell *ActorCell) MetricsCollector {
+	if holder != nil {
+		if h := holder.Load(); h != nil && h.collector != nil {
+			return h.collector
+		}
+	}
+	if cell != nil && cell.Ref != nil && cell.Ref.system != nil && cell.Ref.system.metrics != nil {
+		return cell.Ref.system.metrics
+	}
+	return noopMetricsCollector{}
+}

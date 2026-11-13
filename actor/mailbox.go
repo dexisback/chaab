@@ -254,5 +254,12 @@ func (m *Mailbox) setNotifier(notifier func()) {
 	if ready && notifier != nil {
 		notifier()
 	}
+}
 
+// Len returns the number of buffered messages currently waiting in the mailbox.
+func (m *Mailbox) Len() int {
+	if m == nil {
+		return 0
+	}
+	return len(m.messages)
 }

@@ -25,6 +25,14 @@ func (r *ActorRef) Mailbox() *Mailbox {
 	return r.mailbox
 }
 
+// MailboxDepth returns the current number of queued messages waiting in the actor's mailbox.
+func (r *ActorRef) MailboxDepth() int {
+	if r == nil || r.mailbox == nil {
+		return 0
+	}
+	return r.mailbox.Len()
+}
+
 // Tell asynchronously enqueues a message for the actor.
 func (reference *ActorRef) Tell(ctx context.Context, message Message) error {
 	if reference == nil {

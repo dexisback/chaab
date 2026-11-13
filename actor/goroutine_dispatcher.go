@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type actorWorker struct {
@@ -18,6 +20,7 @@ type actorWorker struct {
 type GoroutineDispatcher struct {
 	mu      sync.Mutex
 	workers map[string]*actorWorker
+	metrics atomic.Pointer[metricsHolder]
 	wg      sync.WaitGroup
 	closed  bool
 	done    chan struct{}
@@ -29,6 +32,11 @@ func NewGoroutineDispatcher() *GoroutineDispatcher {
 		workers: make(map[string]*actorWorker),
 		done:    make(chan struct{}),
 	}
+}
+
+// SetMetrics configures the telemetry metrics collector for the dispatcher.
+func (d *GoroutineDispatcher) SetMetrics(m MetricsCollector) {
+	setMetricsHolder(&d.metrics, m)
 }
 
 // Register registers an actor with the dispatcher and starts its dedicated execution goroutine.
@@ -130,6 +138,14 @@ func (d *GoroutineDispatcher) invoke(
 ) (shouldStop bool) {
 	var panicked bool
 	var panicVal any
+	var receiveErr error
+
+	actorID := ""
+	if cell != nil && cell.Ref != nil {
+		actorID = cell.Ref.ID()
+	}
+
+	start := time.Now()
 
 	func() {
 		defer func() {
@@ -138,24 +154,27 @@ func (d *GoroutineDispatcher) invoke(
 				panicVal = r
 				slog.Error(
 					"actor panicked while processing a message",
-					"actor_id", cell.Ref.ID(),
+					"actor_id", actorID,
 					"panic", r,
 				)
 			}
 		}()
 
 		if err := cell.CurrentActor().Receive(ctx, message); err != nil {
+			receiveErr = err
 			slog.Error(
 				"actor message processing failed",
-				"actor_id", cell.Ref.ID(),
+				"actor_id", actorID,
 				"error", err,
 			)
-			failure := Failure{ActorID: cell.Ref.ID(), Err: err}
+			failure := Failure{ActorID: actorID, Err: err}
 			directive := cell.HandleFailure(ctx, failure)
 			if directive == DirectiveRestart {
 				if restartErr := cell.Restart(); restartErr != nil {
-					slog.Error("restart failed", "actor_id", cell.Ref.ID(), "error", restartErr)
+					slog.Error("restart failed", "actor_id", actorID, "error", restartErr)
 					shouldStop = true
+				} else {
+					resolveMetrics(&d.metrics, cell).ActorRestarted(actorID)
 				}
 			} else if directive == DirectiveStop {
 				shouldStop = true
@@ -163,19 +182,27 @@ func (d *GoroutineDispatcher) invoke(
 		}
 	}()
 
+	duration := time.Since(start)
+
 	if panicked {
-		failure := Failure{ActorID: cell.Ref.ID(), Panic: panicVal}
+		panicErr := fmt.Errorf("panic: %v", panicVal)
+		failure := Failure{ActorID: actorID, Panic: panicVal}
 		directive := cell.HandleFailure(ctx, failure)
 		if directive == DirectiveRestart {
 			if restartErr := cell.Restart(); restartErr != nil {
-				slog.Error("restart failed", "actor_id", cell.Ref.ID(), "error", restartErr)
+				slog.Error("restart failed", "actor_id", actorID, "error", restartErr)
+				resolveMetrics(&d.metrics, cell).MessageProcessed(actorID, duration, panicErr)
 				return true
 			}
+			resolveMetrics(&d.metrics, cell).ActorRestarted(actorID)
+			resolveMetrics(&d.metrics, cell).MessageProcessed(actorID, duration, panicErr)
 			return false
 		}
+		resolveMetrics(&d.metrics, cell).MessageProcessed(actorID, duration, panicErr)
 		return true
 	}
 
+	resolveMetrics(&d.metrics, cell).MessageProcessed(actorID, duration, receiveErr)
 	return shouldStop
 }
 

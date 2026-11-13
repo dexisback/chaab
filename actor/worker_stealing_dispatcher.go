@@ -316,7 +316,7 @@ func (dispatcher *WorkStealingDispatcher) receiveOne(task *workStealingTask) (id
 		return true, false
 	}
 
-	if panicked := dispatcher.invoke(task, message); panicked {
+	if _, shouldStop := dispatcher.invoke(task, message); shouldStop {
 		task.mailbox.Close()
 		dispatcher.finish(task)
 		return false, true
@@ -324,33 +324,62 @@ func (dispatcher *WorkStealingDispatcher) receiveOne(task *workStealingTask) (id
 	return false, false
 }
 
+// invoke calls the actor's Receive method and isolates panics.
+func (dispatcher *WorkStealingDispatcher) invoke(
+	task *workStealingTask,
+	message Message,
+) (panicked bool, shouldStop bool) {
+	var panicVal any
 
-//invoke calls the actor's receive method and isolated panices 
-func(dispatcher *WorkStealingDispatcher) invoke(
-	task *workStealingTask, message Message) (panicked bool ) {
-		defer func(){
-			if r := recover(); r != nil{
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+				panicVal = r
 				slog.Error(
 					"panic in actor receive",
 					"actor", task.cell.Ref.ID(),
 					"message", message,
 					"error", r,
 				)
-				panicked = true 
 			}
 		}()
 
-		if err := task.cell.Actor.Receive(task.ctx, message); err != nil {
+		if err := task.cell.CurrentActor().Receive(task.ctx, message); err != nil {
 			slog.Error(
 				"error in actor receive",
 				"actor", task.cell.Ref.ID(),
 				"message", message,
 				"error", err,
 			)
-			return true 
+			failure := Failure{ActorID: task.cell.Ref.ID(), Err: err}
+			directive := task.cell.HandleFailure(task.ctx, failure)
+			if directive == DirectiveRestart {
+				if restartErr := task.cell.Restart(); restartErr != nil {
+					slog.Error("restart failed", "actor_id", task.cell.Ref.ID(), "error", restartErr)
+					shouldStop = true
+				}
+			} else if directive == DirectiveStop {
+				shouldStop = true
+			}
 		}
-		return false
+	}()
+
+	if panicked {
+		failure := Failure{ActorID: task.cell.Ref.ID(), Panic: panicVal}
+		directive := task.cell.HandleFailure(task.ctx, failure)
+		if directive == DirectiveRestart {
+			if restartErr := task.cell.Restart(); restartErr != nil {
+				slog.Error("restart failed", "actor_id", task.cell.Ref.ID(), "error", restartErr)
+				return false, true
+			}
+			return false, false
+		}
+		return true, true
 	}
+
+	return false, shouldStop
+}
 
 
 func (dispatcher *WorkStealingDispatcher) finish(task *workStealingTask) {

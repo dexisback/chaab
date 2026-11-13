@@ -11,4 +11,9 @@ type Actor interface {
 
 }
 
+// ActorFactory constructs a fresh instance of an Actor.
+// It is invoked at actor creation and upon each supervised restart
+// to ensure internal state mutations from failures are cleanly discarded.
+type ActorFactory func() (Actor, error)
+
 //we intentionally not write mailbox/goroutines/channels/scheduling logic here. these belong to the runtime, not individual actors

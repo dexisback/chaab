@@ -295,6 +295,45 @@ func RunDispatcherContractTests(t *testing.T, newDispatcher func() actor.Dispatc
 		}
 	})
 
+	t.Run("ProcessingErrorsDoNotTerminateActor", func(t *testing.T) {
+		d := newDispatcher()
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = d.Shutdown(ctx)
+		})
+
+		done := make(chan struct{})
+		act := &contractErrorResilientActor{
+			expected: 4,
+			done:     done,
+		}
+
+		sys := actor.NewSystem(actor.WithDispatcher(d))
+		ref, err := sys.CreateActor(act)
+		if err != nil {
+			t.Fatalf("create actor: %v", err)
+		}
+
+		ctx := context.Background()
+		_ = ref.Tell(ctx, "ok1")
+		_ = ref.Tell(ctx, "err")
+		_ = ref.Tell(ctx, "err")
+		_ = ref.Tell(ctx, "ok2")
+
+		select {
+		case <-done:
+			if act.errCount.Load() != 2 {
+				t.Fatalf("expected 2 errors, got %d", act.errCount.Load())
+			}
+			if act.totalCount.Load() != 4 {
+				t.Fatalf("expected 4 total processed messages, got %d", act.totalCount.Load())
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out: actor stopped early on error, only processed %d/4", act.totalCount.Load())
+		}
+	})
+
 	t.Run("ConcurrentUnregisterShutdownAndTell", func(t *testing.T) {
 		d := newDispatcher()
 		sys := actor.NewSystem(actor.WithDispatcher(d))
@@ -345,3 +384,26 @@ func RunDispatcherContractTests(t *testing.T, newDispatcher func() actor.Dispatc
 		wg.Wait()
 	})
 }
+
+type contractErrorResilientActor struct {
+	errCount   atomic.Int32
+	totalCount atomic.Int32
+	done       chan struct{}
+	expected   int32
+}
+
+func (e *contractErrorResilientActor) Receive(ctx context.Context, msg any) error {
+	str, _ := msg.(string)
+	if str == "err" {
+		e.errCount.Add(1)
+		if e.totalCount.Add(1) == e.expected {
+			close(e.done)
+		}
+		return errors.New("simulated error")
+	}
+	if e.totalCount.Add(1) == e.expected {
+		close(e.done)
+	}
+	return nil
+}
+

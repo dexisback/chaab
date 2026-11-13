@@ -173,6 +173,80 @@ func TestSystem_UnregisterUpdatesRegistry(t *testing.T) {
 	}
 }
 
+type systemPanicActor struct {
+	panicked chan struct{}
+}
+
+func (p *systemPanicActor) Receive(ctx context.Context, message any) error {
+	if message == "panic" {
+		close(p.panicked)
+		panic("simulated panic in actor")
+	}
+	return nil
+}
+
+func TestSystem_UnregisterPanickedActor(t *testing.T) {
+	// Verify that if an actor panics and terminates in the dispatcher,
+	// calling sys.Unregister cleanly purges it from System.actors rather
+	// than leaving a zombie entry.
+	dispatchers := []struct {
+		name string
+		newD func() actor.Dispatcher
+	}{
+		{"Goroutine", func() actor.Dispatcher { return actor.NewGoroutineDispatcher() }},
+		{"WorkerPool", func() actor.Dispatcher {
+			return actor.NewWorkerPoolDispatcher(actor.WorkerPoolConfig{Workers: 2, MessageBudget: 5})
+		}},
+		{"WorkStealing", func() actor.Dispatcher {
+			return actor.NewWorkStealingDispatcher(&actor.WorkStealingConfig{MaxWorkers: 2, MaxMessageBudget: 5})
+		}},
+	}
+
+	for _, tc := range dispatchers {
+		t.Run(tc.name, func(t *testing.T) {
+			sys := actor.NewSystem(actor.WithDispatcher(tc.newD()))
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				_ = sys.Shutdown(ctx)
+			})
+
+			panicked := make(chan struct{})
+			ref, err := sys.CreateActor(&systemPanicActor{panicked: panicked})
+			if err != nil {
+				t.Fatalf("create actor: %v", err)
+			}
+
+			if err := ref.Tell(context.Background(), "panic"); err != nil {
+				t.Fatalf("tell panic: %v", err)
+			}
+
+			select {
+			case <-panicked:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for actor to panic")
+			}
+
+			// Allow background dispatcher teardown to finish
+			time.Sleep(50 * time.Millisecond)
+
+			// Unregister must succeed and clean up registry
+			if err := sys.Unregister(ref.ID()); err != nil {
+				t.Fatalf("unregister on panicked actor failed: %v", err)
+			}
+
+			if _, ok := sys.GetActor(ref.ID()); ok {
+				t.Fatalf("expected panicked actor %s to be removed from registry", ref.ID())
+			}
+
+			// Second unregister should fail with ErrActorNotFound
+			if err := sys.Unregister(ref.ID()); !errors.Is(err, actor.ErrActorNotFound) {
+				t.Fatalf("expected ErrActorNotFound on second unregister, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSystem_ShutdownRejectsNewActorCreation(t *testing.T) {
 	sys := actor.NewSystem()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

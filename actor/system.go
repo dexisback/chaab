@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -45,9 +46,40 @@ func NewSystemWithDispatcher(dispatcher Dispatcher) *System {
 	return NewSystem(WithDispatcher(dispatcher))
 }
 
-// CreateActor registers a new actor with the system and its dispatcher, returning an ActorRef.
-func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
+// ActorOption configures individual actor cells upon creation.
+type ActorOption func(*ActorCell)
+
+// WithSupervisor attaches a custom Supervisor to an actor.
+func WithSupervisor(supervisor Supervisor) ActorOption {
+	return func(cell *ActorCell) {
+		cell.Supervisor = supervisor
+	}
+}
+
+// CreateActor registers a new actor instance. For stateful actors requiring clean
+// state recreation across restarts, prefer CreateActorFromFactory.
+func (s *System) CreateActor(actor Actor, opts ...ActorOption) (*ActorRef, error) {
 	if actor == nil {
+		return nil, ErrNilActor
+	}
+	return s.CreateActorFromFactory(func() (Actor, error) {
+		return actor, nil
+	}, opts...)
+}
+
+// CreateActorFromFactory registers a new actor using a factory function.
+// The factory is executed to construct the initial actor instance and called
+// again on any supervised restart to discard mutated internal state.
+func (s *System) CreateActorFromFactory(factory ActorFactory, opts ...ActorOption) (*ActorRef, error) {
+	if factory == nil {
+		return nil, ErrNilActor
+	}
+
+	initialActor, err := factory()
+	if err != nil {
+		return nil, fmt.Errorf("initial actor creation failed: %w", err)
+	}
+	if initialActor == nil {
 		return nil, ErrNilActor
 	}
 
@@ -69,9 +101,14 @@ func (s *System) CreateActor(actor Actor) (*ActorRef, error) {
 	}
 
 	cell := &ActorCell{
-		Actor:   actor,
+		Actor:   initialActor,
 		Ref:     reference,
 		Mailbox: mailbox,
+		Factory: factory,
+	}
+
+	for _, opt := range opts {
+		opt(cell)
 	}
 
 	if err := s.dispatcher.Register(cell); err != nil {
@@ -108,7 +145,8 @@ func (s *System) Unregister(id string) error {
 	}
 	s.mu.Unlock()
 
-	if err := s.dispatcher.Unregister(id); err != nil {
+	err := s.dispatcher.Unregister(id)
+	if err != nil && !errors.Is(err, ErrActorNotFound) {
 		return err
 	}
 

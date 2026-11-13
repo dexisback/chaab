@@ -35,4 +35,12 @@ Two separate flows: message delivery and message execution:
 Send() enqueues messages. Receive() dequeues them
 
 
+---
+for designing the supervision model. we are considering this as our failure model:
+- Receive() returns an error → actor failure.
+- Receive() panics → recover and report actor failure.
+- Explicit stop → normal termination, not failure.
+
+
+
 

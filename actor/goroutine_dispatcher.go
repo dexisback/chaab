@@ -84,6 +84,7 @@ func (d *GoroutineDispatcher) run(
 	mailbox *Mailbox,
 	worker *actorWorker,
 ) {
+	id := cell.Ref.ID()
 	defer worker.cancel()
 	defer mailbox.Close()
 	defer d.wg.Done()
@@ -92,10 +93,13 @@ func (d *GoroutineDispatcher) run(
 		if r := recover(); r != nil {
 			slog.Error(
 				"actor panicked while processing a message",
-				"actor_id", cell.Ref.ID(),
+				"actor_id", id,
 				"panic", r,
 			)
 		}
+		d.mu.Lock()
+		delete(d.workers, id)
+		d.mu.Unlock()
 	}()
 
 	for {
@@ -104,7 +108,7 @@ func (d *GoroutineDispatcher) run(
 			if errors.Is(err, ErrActorStopped) || ctx.Err() != nil {
 				return
 			}
-			slog.Error("mailbox receive failed", "actor_id", cell.Ref.ID(), "error", err)
+			slog.Error("mailbox receive failed", "actor_id", id, "error", err)
 			continue
 		}
 
@@ -112,14 +116,66 @@ func (d *GoroutineDispatcher) run(
 			return
 		}
 
-		if err := cell.Actor.Receive(ctx, message); err != nil {
+		if shouldStop := d.invoke(ctx, cell, message); shouldStop {
+			return
+		}
+	}
+}
+
+func (d *GoroutineDispatcher) invoke(
+	ctx context.Context,
+	cell *ActorCell,
+	message Message,
+) (shouldStop bool) {
+	var panicked bool
+	var panicVal any
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+				panicVal = r
+				slog.Error(
+					"actor panicked while processing a message",
+					"actor_id", cell.Ref.ID(),
+					"panic", r,
+				)
+			}
+		}()
+
+		if err := cell.CurrentActor().Receive(ctx, message); err != nil {
 			slog.Error(
 				"actor message processing failed",
 				"actor_id", cell.Ref.ID(),
 				"error", err,
 			)
+			failure := Failure{ActorID: cell.Ref.ID(), Err: err}
+			directive := cell.HandleFailure(ctx, failure)
+			if directive == DirectiveRestart {
+				if restartErr := cell.Restart(); restartErr != nil {
+					slog.Error("restart failed", "actor_id", cell.Ref.ID(), "error", restartErr)
+					shouldStop = true
+				}
+			} else if directive == DirectiveStop {
+				shouldStop = true
+			}
 		}
+	}()
+
+	if panicked {
+		failure := Failure{ActorID: cell.Ref.ID(), Panic: panicVal}
+		directive := cell.HandleFailure(ctx, failure)
+		if directive == DirectiveRestart {
+			if restartErr := cell.Restart(); restartErr != nil {
+				slog.Error("restart failed", "actor_id", cell.Ref.ID(), "error", restartErr)
+				return true
+			}
+			return false
+		}
+		return true
 	}
+
+	return shouldStop
 }
 
 // Unregister stops the actor's goroutine and removes it from the dispatcher.

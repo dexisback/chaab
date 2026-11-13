@@ -206,7 +206,7 @@ func (d *WorkerPoolDispatcher) process(task *workerPoolTask) {
 			break
 		}
 
-		if panicked := d.invoke(task, message); panicked {
+		if _, shouldStop := d.invoke(task, message); shouldStop {
 			go task.mailbox.Close()
 			d.finish(task)
 			return
@@ -228,27 +228,55 @@ func (d *WorkerPoolDispatcher) process(task *workerPoolTask) {
 func (d *WorkerPoolDispatcher) invoke(
 	task *workerPoolTask,
 	message Message,
-) (panicked bool) {
-	defer func() {
-		if r := recover(); r != nil {
+) (panicked bool, shouldStop bool) {
+	var panicVal any
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+				panicVal = r
+				slog.Error(
+					"actor panicked while processing a message",
+					"actor_id", task.cell.Ref.ID(),
+					"panic", r,
+				)
+			}
+		}()
+
+		if err := task.cell.CurrentActor().Receive(task.ctx, message); err != nil {
 			slog.Error(
-				"actor panicked while processing a message",
+				"actor message processing failed",
 				"actor_id", task.cell.Ref.ID(),
-				"panic", r,
+				"error", err,
 			)
-			panicked = true
+			failure := Failure{ActorID: task.cell.Ref.ID(), Err: err}
+			directive := task.cell.HandleFailure(task.ctx, failure)
+			if directive == DirectiveRestart {
+				if restartErr := task.cell.Restart(); restartErr != nil {
+					slog.Error("restart failed", "actor_id", task.cell.Ref.ID(), "error", restartErr)
+					shouldStop = true
+				}
+			} else if directive == DirectiveStop {
+				shouldStop = true
+			}
 		}
 	}()
 
-	if err := task.cell.Actor.Receive(task.ctx, message); err != nil {
-		slog.Error(
-			"actor message processing failed",
-			"actor_id", task.cell.Ref.ID(),
-			"error", err,
-		)
+	if panicked {
+		failure := Failure{ActorID: task.cell.Ref.ID(), Panic: panicVal}
+		directive := task.cell.HandleFailure(task.ctx, failure)
+		if directive == DirectiveRestart {
+			if restartErr := task.cell.Restart(); restartErr != nil {
+				slog.Error("restart failed", "actor_id", task.cell.Ref.ID(), "error", restartErr)
+				return false, true
+			}
+			return false, false
+		}
+		return true, true
 	}
 
-	return false
+	return false, shouldStop
 }
 
 // finish marks an actor as finished and releases its resources.

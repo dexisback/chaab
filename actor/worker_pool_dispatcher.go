@@ -192,32 +192,47 @@ func (d *WorkerPoolDispatcher) worker() {
 	}
 }
 
+// receiveOne takes one message from the mailbox and executes it.
+// idle is true when the mailbox has no messages available right now.
+// finished is true when the actor has been stopped.
+func (d *WorkerPoolDispatcher) receiveOne(task *workerPoolTask) (idle, finished bool) {
+	message, ok, err := task.mailbox.tryReceive()
+
+	if errors.Is(err, ErrActorStopped) {
+		d.finish(task)
+		return false, true
+	}
+
+	if err != nil {
+		slog.Error("mailbox receive failed",
+			"actor_id", task.cell.Ref.ID(),
+			"error", err,
+		)
+		return false, false
+	}
+
+	if !ok {
+		return true, false
+	}
+
+	if _, shouldStop := d.invoke(task, message); shouldStop {
+		go task.mailbox.Close()
+		d.finish(task)
+		return false, true
+	}
+
+	return false, false
+}
+
 // process handles a limited number of messages for one actor.
 func (d *WorkerPoolDispatcher) process(task *workerPoolTask) {
 	for i := 0; i < d.config.MessageBudget; i++ {
-		message, ok, err := task.mailbox.tryReceive()
-
-		if errors.Is(err, ErrActorStopped) {
-			d.finish(task)
+		idle, finished := d.receiveOne(task)
+		if finished {
 			return
 		}
-
-		if err != nil {
-			slog.Error("mailbox receive failed",
-				"actor_id", task.cell.Ref.ID(),
-				"error", err,
-			)
-			continue
-		}
-
-		if !ok {
+		if idle {
 			break
-		}
-
-		if _, shouldStop := d.invoke(task, message); shouldStop {
-			go task.mailbox.Close()
-			d.finish(task)
-			return
 		}
 	}
 
@@ -225,9 +240,7 @@ func (d *WorkerPoolDispatcher) process(task *workerPoolTask) {
 	// mailbox that is already closed. The loop then ends on the budget,
 	// not on ErrActorStopped, and Unregister waits forever.
 	if !task.mailbox.hasMessages() {
-		_, _, err := task.mailbox.tryReceive()
-		if errors.Is(err, ErrActorStopped) {
-			d.finish(task)
+		if _, finished := d.receiveOne(task); finished {
 			return
 		}
 	}

@@ -344,8 +344,8 @@ go run ./cmd/bank-sim
 ```text
 2026/11/14 02:19:52 ERROR actor panicked while processing a message actor_id=actor-2 panic="simulated account crash: simulated unhandled panic"
 --- Bank Simulation Completed Successfully ---
-Alice Final Balance: $800 (Expected: $800)
-Bob Final Balance:   $550 (Expected: $550 after restart)
+Amaan Final Balance: $800 (Expected: $800)
+Ayaan Final Balance:   $550 (Expected: $550 after restart)
 Total Messages:      7
 Total Restarts:      1
 Dead Letters:        2

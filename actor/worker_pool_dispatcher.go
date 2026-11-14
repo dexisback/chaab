@@ -221,6 +221,17 @@ func (d *WorkerPoolDispatcher) process(task *workerPoolTask) {
 		}
 	}
 
+	// A turn can spend its whole budget on the last buffered messages of a
+	// mailbox that is already closed. The loop then ends on the budget,
+	// not on ErrActorStopped, and Unregister waits forever.
+	if !task.mailbox.hasMessages() {
+		_, _, err := task.mailbox.tryReceive()
+		if errors.Is(err, ErrActorStopped) {
+			d.finish(task)
+			return
+		}
+	}
+
 	d.mu.Lock()
 
 	task.running = false
